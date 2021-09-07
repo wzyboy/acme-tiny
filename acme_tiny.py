@@ -144,14 +144,13 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
         # dns-01 (FIXME: only Cloudflare NS is supported)
         if challenge_type == 'dns-01':
             keyauthorization = _b64(hashlib.sha256(keyauthorization.encode('utf8')).digest())
-            txt_domain = f'_acme-challenge.{domain}'
+            txt_domain = '_acme-challenge.{0}'.format(domain)
             cname_domain = _cmd(['dig', '+short', 'cname', txt_domain], err_msg='dig error').decode().strip().rstrip('.')
             txt_domain = cname_domain or txt_domain
             txt_domain_apex = '.'.join(txt_domain.rsplit('.', 2)[-2:])  # FIXME: use PSL
-            zone_id = requests.get(f'https://api.cloudflare.com/client/v4/zones?name={txt_domain_apex}', headers=CF_TOKEN).json()['result'][0]['id']
-            record_id = requests.get(f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={txt_domain}&type=TXT', headers=CF_TOKEN).json()['result'][0]['id']
-            log.info(f'Calling Cloudflare API: {txt_domain} IN TXT {keyauthorization}')
-            requests.patch(f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}', headers=CF_TOKEN, json={'content': keyauthorization})
+            zone_id = requests.get('https://api.cloudflare.com/client/v4/zones?name={0}'.format(txt_domain_apex), headers=CF_TOKEN).json()['result'][0]['id']
+            record_id = requests.get('https://api.cloudflare.com/client/v4/zones/{0}/dns_records?name={1}&type=TXT'.format(zone_id, txt_domain), headers=CF_TOKEN).json()['result'][0]['id']
+            requests.patch('https://api.cloudflare.com/client/v4/zones/{0}/dns_records/{1}'.format(zone_id, record_id), headers=CF_TOKEN, json={'content': keyauthorization})
             time.sleep(10)
 
         # http-01
