@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # Copyright Daniel Roesler, under MIT license, see LICENSE at github.com/diafygi/acme-tiny
-import argparse, subprocess, json, os, sys, base64, binascii, time, hashlib, re, copy, textwrap, logging
+import argparse, subprocess, json, os, sys, base64, binascii, time, hashlib, re, copy, textwrap, logging, requests
 try:
     from urllib.request import urlopen, Request # Python 3
 except ImportError: # pragma: no cover
@@ -12,6 +12,8 @@ DEFAULT_DIRECTORY_URL = "https://acme-v02.api.letsencrypt.org/directory"
 LOGGER = logging.getLogger(__name__)
 LOGGER.addHandler(logging.StreamHandler())
 LOGGER.setLevel(logging.INFO)
+
+CF_TOKEN = {'Authorization': 'Bearer ' + os.environ.get('CF_TOKEN', '')}
 
 def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check=False, directory_url=DEFAULT_DIRECTORY_URL, contact=None, check_port=None):
     directory, acct_headers, alg, jwk = None, None, None, None # global variables
@@ -131,27 +133,47 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
             continue
         log.info("Verifying {0}...".format(domain))
 
-        # find the http-01 challenge and write the challenge file
-        challenge = [c for c in authorization['challenges'] if c['type'] == "http-01"][0]
+        # use dns-01 if domain is a wildcard
+        challenge_type = 'dns-01' if authorization.get('wildcard') else 'http-01'
+
+        # find and complete the challenge
+        challenge = [c for c in authorization['challenges'] if c['type'] == challenge_type][0]
         token = re.sub(r"[^A-Za-z0-9_\-]", "_", challenge['token'])
         keyauthorization = "{0}.{1}".format(token, thumbprint)
-        wellknown_path = os.path.join(acme_dir, token)
-        with open(wellknown_path, "w") as wellknown_file:
-            wellknown_file.write(keyauthorization)
 
-        # check that the file is in place
-        try:
-            wellknown_url = "http://{0}{1}/.well-known/acme-challenge/{2}".format(domain, "" if check_port is None else ":{0}".format(check_port), token)
-            assert (disable_check or _do_request(wellknown_url)[0] == keyauthorization)
-        except (AssertionError, ValueError) as e:
-            raise ValueError("Wrote file to {0}, but couldn't download {1}: {2}".format(wellknown_path, wellknown_url, e))
+        # dns-01 (FIXME: only Cloudflare NS is supported)
+        if challenge_type == 'dns-01':
+            keyauthorization = _b64(hashlib.sha256(keyauthorization.encode('utf8')).digest())
+            txt_domain = f'_acme-challenge.{domain}'
+            cname_domain = _cmd(['dig', '+short', 'cname', txt_domain], err_msg='dig error').decode().strip().rstrip('.')
+            txt_domain = cname_domain or txt_domain
+            txt_domain_apex = '.'.join(txt_domain.rsplit('.', 2)[-2:])  # FIXME: use PSL
+            zone_id = requests.get(f'https://api.cloudflare.com/client/v4/zones?name={txt_domain_apex}', headers=CF_TOKEN).json()['result'][0]['id']
+            record_id = requests.get(f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records?name={txt_domain}&type=TXT', headers=CF_TOKEN).json()['result'][0]['id']
+            log.info(f'Calling Cloudflare API: {txt_domain} IN TXT {keyauthorization}')
+            requests.patch(f'https://api.cloudflare.com/client/v4/zones/{zone_id}/dns_records/{record_id}', headers=CF_TOKEN, json={'content': keyauthorization})
+            time.sleep(10)
+
+        # http-01
+        elif challenge_type == 'http-01':
+            wellknown_path = os.path.join(acme_dir, token)
+            with open(wellknown_path, "w") as wellknown_file:
+                wellknown_file.write(keyauthorization)
+
+            # check that the file is in place
+            try:
+                wellknown_url = "http://{0}{1}/.well-known/acme-challenge/{2}".format(domain, "" if check_port is None else ":{0}".format(check_port), token)
+                assert (disable_check or _do_request(wellknown_url)[0] == keyauthorization)
+            except (AssertionError, ValueError) as e:
+                raise ValueError("Wrote file to {0}, but couldn't download {1}: {2}".format(wellknown_path, wellknown_url, e))
 
         # say the challenge is done
         _send_signed_request(challenge['url'], {}, "Error submitting challenges: {0}".format(domain))
         authorization = _poll_until_not(auth_url, ["pending"], "Error checking challenge status for {0}".format(domain))
         if authorization['status'] != "valid":
             raise ValueError("Challenge did not pass for {0}: {1}".format(domain, authorization))
-        os.remove(wellknown_path)
+        if challenge_type == 'http-01':
+            os.remove(wellknown_path)
         log.info("{0} verified!".format(domain))
 
     # finalize the order with the csr
