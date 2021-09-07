@@ -122,6 +122,11 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
     order, _, order_headers = _send_signed_request(directory['newOrder'], order_payload, "Error creating new order")
     log.info("Order created!")
 
+    # use dns-01 for wildcard CSR
+    challenge_type = 'dns-01' if any(d.startswith('*') for d in domains) else 'http-01'
+    if challenge_type == 'dns-01' and not CF_TOKEN:
+        raise ValueError('CF_TOKEN required for dns-01')
+
     # get the authorizations that need to be completed
     for auth_url in order['authorizations']:
         authorization, _, _ = _send_signed_request(auth_url, None, "Error getting challenges")
@@ -132,9 +137,6 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
             log.info("Already verified: {0}, skipping...".format(domain))
             continue
         log.info("Verifying {0}...".format(domain))
-
-        # use dns-01 if domain is a wildcard
-        challenge_type = 'dns-01' if authorization.get('wildcard') else 'http-01'
 
         # find and complete the challenge
         challenge = [c for c in authorization['challenges'] if c['type'] == challenge_type][0]
