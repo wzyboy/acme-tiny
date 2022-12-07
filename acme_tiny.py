@@ -153,7 +153,7 @@ def get_crt(account_key, csr, acme_dir, log=LOGGER, CA=DEFAULT_CA, disable_check
             zone_id = requests.get('https://api.cloudflare.com/client/v4/zones?name={0}'.format(txt_domain_apex), headers=CF_TOKEN).json()['result'][0]['id']
             record_id = requests.get('https://api.cloudflare.com/client/v4/zones/{0}/dns_records?name={1}&type=TXT'.format(zone_id, txt_domain), headers=CF_TOKEN).json()['result'][0]['id']
             requests.patch('https://api.cloudflare.com/client/v4/zones/{0}/dns_records/{1}'.format(zone_id, record_id), headers=CF_TOKEN, json={'content': keyauthorization})
-            time.sleep(10)
+            time.sleep(30)
 
         # http-01
         elif challenge_type == 'http-01':
